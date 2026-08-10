@@ -29,6 +29,8 @@ from config import (
 
 GMAIL_USER         = os.environ.get("GMAIL_USER", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+FB_APP_TOKEN       = os.environ.get("FB_APP_TOKEN", "")
+FB_GRAPH_VERSION   = "v21.0"
 
 
 def log(msg):
@@ -208,6 +210,72 @@ def send_immediate_alert(alerts: list):
         log(f"  [email] Error enviando alerta: {e}")
 
 
+# ── Facebook Graph API ───────────────────────────────────────────────────────
+
+def fetch_facebook_page(page_id: str, actor: str, categoria: str) -> int:
+    """Lee las últimas publicaciones de una página pública de Facebook."""
+    if not FB_APP_TOKEN:
+        return 0
+    url = (
+        f"https://graph.facebook.com/{FB_GRAPH_VERSION}/{page_id}/posts"
+        f"?fields=id,message,story,created_time,permalink_url"
+        f"&limit=10&access_token={FB_APP_TOKEN}"
+    )
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            log(f"  [fb] Error {page_id}: HTTP {r.status_code}")
+            return 0
+        data = r.json().get("data", [])
+        count = 0
+        for post in data:
+            text = post.get("message") or post.get("story") or ""
+            pid  = post.get("id", "")
+            link = post.get("permalink_url", "")
+            if not pid:
+                continue
+            saved = db.save_post(
+                source_id=f"fb_{pid}",
+                actor=actor,
+                categoria=categoria,
+                platform="facebook",
+                text=text[:500],
+                url=link,
+            )
+            if saved:
+                count += 1
+                if text:
+                    check_crisis(text, link, actor, "facebook")
+        return count
+    except Exception as e:
+        log(f"  [fb] Error {actor}: {e}")
+        return 0
+
+
+def resolve_fb_id(fb_handle: str) -> str:
+    """Resuelve un handle/slug de Facebook a su ID numérico."""
+    url = f"https://graph.facebook.com/{FB_GRAPH_VERSION}/{fb_handle}?fields=id&access_token={FB_APP_TOKEN}"
+    try:
+        r = requests.get(url, timeout=8)
+        return r.json().get("id", fb_handle)
+    except Exception:
+        return fb_handle
+
+
+def scrape_facebook_pages(accounts: dict, _nitter=None) -> int:
+    total = 0
+    for name, data in accounts.items():
+        handle = data.get("facebook") or data.get("facebook2")
+        if not handle:
+            continue
+        log(f"  → FB: {name} ({handle})")
+        page_id = resolve_fb_id(handle) if not handle.isdigit() else handle
+        categoria = data.get("categoria", "OPOSITOR")
+        total += fetch_facebook_page(page_id, name, categoria)
+        time.sleep(random.uniform(1.0, 2.5))
+    return total
+
+
 # ── Ciclo principal ──────────────────────────────────────────────────────────
 
 def collect_cycle():
@@ -243,8 +311,13 @@ def collect_cycle():
             log(f"  → RSS: {name}")
             total_news += fetch_rss(name, data["rss"], "MEDIO_TRADICIONAL")
 
-    # 4. Medios locales (solo Facebook por ahora — pendiente token)
-    log("→ Medios locales: pendiente token Facebook")
+    # 4. Facebook — Opositores + Medios locales
+    if FB_APP_TOKEN:
+        log("→ Monitoreando Facebook (opositores + medios locales)…")
+        total_posts += scrape_facebook_pages(OPPOSITION_ACTORS, nitter)
+        total_posts += scrape_facebook_pages(LOCAL_MEDIA, nitter)
+    else:
+        log("→ Facebook: sin token configurado")
 
     log(f"\n✓ Ciclo completo: {total_posts} posts · {total_news} noticias")
 
