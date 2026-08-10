@@ -1,0 +1,62 @@
+name: CENTINELA OCCIDENTE — Recolección
+
+on:
+  schedule:
+    # Honduras = UTC-6. Recolección cada 2 horas.
+    # La ENTREGA la dispara cron-job.org vía workflow_dispatch a las 02:00 UTC (8 PM HN)
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      # ── Restaurar base de datos de ciclos anteriores ──────────────────────
+      - name: Restaurar base de datos
+        uses: actions/cache/restore@v4
+        with:
+          path: occidente.db
+          key: occidente-db-never-matches
+          restore-keys: |
+            occidente-db-
+
+      # ── Recolección ───────────────────────────────────────────────────────
+      - name: Ejecutar collect.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GITHUB_ACTIONS: "true"
+        run: python collect.py
+
+      # ── Entrega a las 8 PM Honduras (02:00 UTC), disparada por cron-job.org ─
+      - name: Ejecutar deliver.py (8 PM Honduras)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GITHUB_ACTIONS: "true"
+        run: python deliver.py
+
+      # ── Persistir base de datos para el próximo ciclo ─────────────────────
+      - name: Guardar base de datos
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: occidente.db
+          key: occidente-db-${{ github.run_id }}-${{ github.run_attempt }}

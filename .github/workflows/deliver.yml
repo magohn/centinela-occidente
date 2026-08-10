@@ -1,0 +1,50 @@
+name: CENTINELA OCCIDENTE — Entrega Manual
+
+# Workflow para pruebas manuales.
+# La entrega automática de las 8 PM Honduras está integrada en collect.yml.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Restaurar base de datos
+        uses: actions/cache/restore@v4
+        with:
+          path: occidente.db
+          key: occidente-db-never-matches
+          restore-keys: |
+            occidente-db-
+
+      - name: Ejecutar deliver.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GITHUB_ACTIONS: "true"
+        run: python deliver.py
+
+      - name: Subir informe como artefacto
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: informe-occidente-${{ github.run_id }}
+          path: reportes_occidente/**/*.html
+          retention-days: 7
+          if-no-files-found: ignore
