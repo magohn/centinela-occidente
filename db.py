@@ -149,6 +149,22 @@ def get_today_posts():
     return [dict(r) for r in rows]
 
 
+def get_recent_alert_actors(days: int = 30) -> list:
+    """Devuelve actores que tuvieron alertas en los últimos N días, con fecha de primera alerta."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT actor, MIN(created_at) as first_alert, MAX(created_at) as last_alert,
+               COUNT(*) as total_alerts, GROUP_CONCAT(DISTINCT keyword) as keywords
+        FROM alerts
+        WHERE created_at >= ?
+        GROUP BY actor
+        ORDER BY last_alert DESC
+    """, (since,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_today_news():
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     conn = get_conn()

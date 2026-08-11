@@ -29,8 +29,6 @@ GMAIL_USER         = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 
-CLIENTE_CONTACTO = "Max González / INSERCO"
-
 
 def log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
@@ -104,9 +102,10 @@ def build_data_summary(posts: list, news: list) -> str:
             for i in items[:max_items]
         ]
 
-    source_activity = build_source_activity(posts, news)
-    metrics         = build_metrics(posts, news)
-    alerts          = db.get_pending_alerts()
+    source_activity  = build_source_activity(posts, news)
+    metrics          = build_metrics(posts, news)
+    alerts           = db.get_pending_alerts()
+    radar_actors     = db.get_recent_alert_actors(days=30)
 
     return json.dumps({
         "cliente":              fmt([p for p in posts if p.get("categoria") == "CLIENTE"]),
@@ -124,6 +123,16 @@ def build_data_summary(posts: list, news: list) -> str:
         ],
         "fuentes_inactivas":    source_activity,
         "metricas":             metrics,
+        "radar_activo":         [
+            {
+                "actor":        r.get("actor"),
+                "primera_alerta": r.get("first_alert", "")[:10],
+                "ultima_alerta":  r.get("last_alert", "")[:10],
+                "total_alertas":  r.get("total_alerts"),
+                "keywords":       r.get("keywords", ""),
+            }
+            for r in radar_actors
+        ],
     }, ensure_ascii=False, indent=2)
 
 
@@ -140,26 +149,52 @@ CONTEXTO:
 - Actores opositores monitoreados: Radio Dignidad, El Referente, Movimiento Amplio,
   Víctor Fernández, Criterio HN, Canal 6, Contra Corriente, Radio Progreso, ASONOG.
 
-REGLAS OBLIGATORIAS DE FORMATO Y CONTENIDO:
-1. Usa ÚNICAMENTE etiquetas HTML válidas. NUNCA uses markdown.
-2. La red social X (antes Twitter) siempre se llama "X", nunca "Twitter".
-3. Si no hay datos: <p><em>Sin actividad registrada.</em></p>
-4. Analiza ÚNICAMENTE los datos reales. No inventes información.
-5. ESTRUCTURA EN DOS CAPAS: primero la CAPA 1 (Resumen Ejecutivo), luego la CAPA 2 (Anexo Detallado).
-6. Cada hallazgo se desarrolla UNA sola vez. El Resumen Ejecutivo solo referencia brevemente
-   lo que el Anexo desarrolla; NUNCA repitas el mismo contexto, cita o cifra en ambas capas.
-7. FUENTES INACTIVAS: no crees un encabezado individual por cada fuente sin actividad.
-   Agrupa todas en una sola línea: "Sin actividad registrada: [lista separada por comas]".
-8. ALERTAS CON PERSONAS INDIVIDUALES: el sujeto de la alerta es siempre la organización
-   o la narrativa emergente, no la persona. El nombre puede aparecer como contexto en el cuerpo,
-   pero nunca en el título/clasificación de la alerta.
-9. MÉTRICAS: siempre muestra el desglose completo — total escaneado → filtrado por relevancia →
-   por actor. Si el total relevante es muy inferior al escaneado, indica el % descartado
-   por no relacionarse con el cliente o su entorno de riesgo.
-10. Resumen Ejecutivo: lenguaje directo, sin subtítulos decorativos, lectura < 2 minutos.
-    Incluye: nivel de riesgo, narrativa dominante, hecho más relevante, alertas activas
-    (solo titular 1-2 líneas c/u), acciones recomendadas (solo título + urgencia),
-    y la métrica clave: publicaciones relevantes / total escaneado.
+REGLAS OBLIGATORIAS (aplican a TODOS los informes):
+
+R1. Usa ÚNICAMENTE etiquetas HTML válidas. NUNCA uses markdown.
+R2. La red social X (antes Twitter) siempre se llama "X", nunca "Twitter".
+R3. Analiza ÚNICAMENTE los datos reales proporcionados. No inventes información.
+
+R4. ESTRUCTURA EN DOS CAPAS:
+    - CAPA 1 Resumen Ejecutivo: narrativa fluida en prosa (3-5 párrafos, SIN subtítulos
+      decorativos, SIN viñetas). Máx. 1 página, lectura < 2 minutos.
+      Contenido: nivel de riesgo, narrativa dominante (propia y opositora), hecho más
+      relevante, alertas activas (solo titular 1-2 líneas c/u), acciones recomendadas
+      (solo título + urgencia ALTA/MEDIA/BAJA), métrica clave al cierre.
+    - CAPA 2 Anexo Detallado: contexto completo. Cada hallazgo se desarrolla UNA sola vez.
+      El Resumen lo referencia brevemente; NUNCA repitas el mismo contexto, cita o cifra.
+
+R5. FUENTES INACTIVAS: no crear un encabezado individual por cada fuente sin actividad.
+    Consolidar en UNA sola línea al final de la sección:
+    "<em>Sin actividad registrada: Fuente1, Fuente2, Fuente3.</em>"
+
+R6. ALERTAS CON INDIVIDUOS: el sujeto de la alerta es la organización o narrativa emergente,
+    nunca la persona. El nombre puede aparecer como contexto en el cuerpo, pero NUNCA en el
+    título o clasificación de la alerta. No incluir valoraciones sobre la persona más allá
+    de lo que ella misma comunicó públicamente.
+
+R7. MÉTRICAS: mostrar siempre el desglose completo:
+    total escaneado → total relevante al cliente → por actor.
+    Si hay diferencia grande, indicar % descartado por no relacionarse con el cliente.
+
+R8. FIRMA Y ATRIBUCIÓN: NUNCA incluir nombres de personas en firma, pie o atribución.
+    Cerrar únicamente con: "Informe generado por CENTINELA OCCIDENTE —
+    Motor de Inteligencia Digital INSERCO."
+
+R9. FILTRO DE RELEVANCIA EN COBERTURA DE MEDIOS: si un actor publicó contenido sin ninguna
+    relación con el cliente o su entorno de riesgo, NO enumerar sus titulares. En su lugar,
+    una sola línea: "[Actor]: actividad registrada sin relación con el cliente (N publicaciones
+    de actualidad general)." Solo detallar cuando exista conexión real con el cliente, su
+    operación o entorno de riesgo (agua, territorio, minería, etc.).
+
+R10. ACTORES EN RADAR ACTIVO (continuidad): un actor con alerta abierta NUNCA debe pasar a
+     "sin actividad registrada" sin contexto. En el Anexo, sección J, incluir siempre la tabla
+     de radar activo con los actores de "radar_activo" del JSON. Para cada uno:
+     - Si tuvo actividad nueva hoy: indicar qué publicó y cómo evoluciona la alerta.
+     - Si NO tuvo actividad nueva: "[Actor]: bajo monitoreo intensificado desde [fecha] —
+       sin actividad nueva en este período; seguimiento continúa."
+     Una alerta solo se retira cuando se cierra explícitamente (con motivo y fecha), NUNCA
+     por omisión ni agrupándola con inactivos genéricos.
 """
 
 DAILY_PROMPT = """Analiza los datos de monitoreo digital del día {date} y genera el
@@ -296,7 +331,34 @@ aquí va el contexto completo:
 <li><strong>Contexto:</strong> [...]</li>
 <li><strong>Acción:</strong> [...]</li>
 <li><strong>Urgencia:</strong> [...]</li>
-</ul>"""
+</ul>
+
+<h2>J. ACTORES EN RADAR ACTIVO</h2>
+Usa los datos de "radar_activo" del JSON. Esta sección SIEMPRE aparece si hay actores
+con alertas abiertas en los últimos 30 días. Para cada actor:
+
+- Si tuvo actividad nueva hoy: indica qué publicó, cómo evoluciona la alerta y si
+  el nivel de amenaza subió, bajó o se mantiene.
+- Si NO tuvo actividad nueva: "[Actor]: bajo monitoreo intensificado desde [primera_alerta]
+  — sin actividad nueva en este período; seguimiento continúa."
+
+Presenta esta sección como tabla HTML:
+<table>
+  <tr>
+    <th>Actor</th>
+    <th>En radar desde</th>
+    <th>Última alerta</th>
+    <th>Keywords registradas</th>
+    <th>Estado hoy</th>
+  </tr>
+  [una fila por actor en radar_activo]
+</table>
+
+Si "radar_activo" está vacío: <p><em>Sin actores bajo vigilancia activa en los últimos 30 días.</em></p>
+
+<p style="margin-top:32px;font-size:12px;color:#555;text-align:center">
+  Informe generado por CENTINELA OCCIDENTE — Motor de Inteligencia Digital INSERCO.
+</p>"""
 
 
 # ── Análisis con Claude ──────────────────────────────────────────────────────
@@ -457,7 +519,7 @@ def build_email_html(analysis_html: str) -> str:
         <!-- LÍNEA FINAL DE RESTRICCIÓN -->
         <p style="font-size:12px;color:#888;border-top:1px solid #eee;
                   padding-top:12px;margin-top:28px;text-align:center">
-          Este documento no debe reenviarse ni citarse sin autorización de {CLIENTE_CONTACTO}.
+          Este documento no debe reenviarse ni citarse sin autorización de INSERCO.
         </p>
       </div>
 
