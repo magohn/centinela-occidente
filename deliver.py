@@ -144,6 +144,30 @@ R9. TERMINOLOGIA — reemplazar "Opositores" por "Medios en Seguimiento" en todo
 
 R10. FUENTES INACTIVAS — no crear un encabezado individual por cada fuente sin actividad.
      Consolidar en una sola linea: "Sin actividad registrada: Fuente1, Fuente2, Fuente3."
+
+R11. COLOR DE NIVEL DE RIESGO: cuando se indique nivel de riesgo o nivel de seguimiento/amenaza,
+     envolver la palabra en un span HTML con fondo de color y texto blanco:
+     BAJO   → <span style="background:#27ae60;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">BAJO</span>
+     MEDIO  → <span style="background:#f39c12;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">MEDIO</span>
+     ALTO   → <span style="background:#e67e22;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">ALTO</span>
+     ALERTA → <span style="background:#e67e22;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">ALERTA</span>
+     CRISIS → <span style="background:#c0392b;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">CRISIS</span>
+
+R12. COLOR DE SENTIMIENTO: cuando se indique "Sentimiento general", envolver la palabra en span:
+     Positivo → <span style="background:#27ae60;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">POSITIVO</span>
+     Neutral  → <span style="background:#f39c12;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">NEUTRAL</span>
+     Negativo → <span style="background:#c0392b;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">NEGATIVO</span>
+     Mixto    → <span style="background:#8e44ad;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold">MIXTO</span>
+
+R13. REFUERZO ABSOLUTO — CONTENIDO IRRELEVANTE: si un actor en seguimiento publico contenido
+     SIN relacion con el cliente, su operacion o entorno de riesgo, la UNICA linea permitida es:
+     "[Actor]: actividad registrada sin relacion con el cliente."
+     NUNCA desarrollar narrativa, contexto, nivel de amenaza ni detalles de ese contenido.
+     Ejemplo de lo que NO se debe hacer: detallar una nota sobre un diputado o recursos publicos
+     sin conexion con la operacion minera.
+
+R14. Los encabezados <h2> estan estilizados en el CSS del email (azul rey, texto blanco, ancho
+     completo). NO agregar estilos inline adicionales a las etiquetas h2.
 """
 
 DAILY_PROMPT = """Analiza los datos de monitoreo digital del {date} y genera el
@@ -154,11 +178,18 @@ PERIODO: Ultimas 24 horas ({period_start} al {period_end})
 DATOS:
 {data}
 
+IMPORTANTE ANTES DE GENERAR:
+- En "Nivel de riesgo del dia" y "Nivel de seguimiento", la palabra del nivel va en badge de color (R11).
+- En "Sentimiento general", la palabra va en badge de color (R12).
+- Los <h2> ya tienen estilo azul rey aplicado por CSS — no agregar estilos inline a h2.
+- Si un actor en seguimiento no tiene contenido relacionado con el cliente: UNA sola linea,
+  sin contexto adicional: "[Actor]: actividad registrada sin relacion con el cliente."
+
 Genera el informe en HTML limpio con EXACTAMENTE estos 9 numerales, en este orden:
 
 <h2>1. RESUMEN EJECUTIVO</h2>
 <ul>
-<li><strong>Nivel de riesgo del dia:</strong> ALTO / MEDIO / BAJO — [razon en una oracion]</li>
+<li><strong>Nivel de riesgo del dia:</strong> [badge-color ALTO/MEDIO/BAJO] — [razon en una oracion]</li>
 <li><strong>Narrativa dominante sobre Aura Minerals:</strong> [descripcion]</li>
 <li><strong>Hecho mas relevante:</strong> [descripcion]</li>
 <li><strong>Actores mas activos:</strong> [lista]</li>
@@ -168,7 +199,7 @@ Genera el informe en HTML limpio con EXACTAMENTE estos 9 numerales, en este orde
 <h2>2. COBERTURA Y SENTIMIENTO — AURA MINERALS</h2>
 Analisis de todo lo publicado sobre Aura Minerals / Minosa / Azacualpa.
 <ul>
-<li><strong>Sentimiento general:</strong> POSITIVO / NEUTRAL / NEGATIVO / MIXTO</li>
+<li><strong>Sentimiento general:</strong> [badge-color POSITIVO/NEUTRAL/NEGATIVO/MIXTO]</li>
 <li><strong>Porcentaje estimado:</strong> [X% Positivo / X% Neutral / X% Negativo]</li>
 <li><strong>Publicacion mas relevante:</strong> [fuente y contenido]</li>
 <li><strong>Narrativa en construccion:</strong> [descripcion]</li>
@@ -184,7 +215,7 @@ Para cada actor CON actividad relacionada con el cliente o su entorno de riesgo:
 <ul>
 <li><strong>Actividad:</strong> [resumen de publicaciones relevantes]</li>
 <li><strong>Narrativa:</strong> [mensaje que estan construyendo]</li>
-<li><strong>Nivel de seguimiento:</strong> ALTO / MEDIO / BAJO</li>
+<li><strong>Nivel de seguimiento:</strong> [badge-color ALTO/MEDIO/BAJO]</li>
 <li><strong>Alcance estimado:</strong> alto / medio / bajo</li>
 </ul>
 
@@ -198,7 +229,7 @@ Al final, una sola linea consolidada para los completamente inactivos:
 Analisis de HCH, TSI, Tu Nota, Once Noticias, QHubo, La Prensa, La Tribuna,
 HRN, Radio America, Radio Cadena Voces.
 <ul>
-<li><strong>Sentimiento general:</strong> POSITIVO / NEUTRAL / NEGATIVO / MIXTO</li>
+<li><strong>Sentimiento general:</strong> [badge-color POSITIVO/NEUTRAL/NEGATIVO/MIXTO]</li>
 <li><strong>Medio mas activo cubriendo el tema:</strong> [nombre y enfoque]</li>
 <li><strong>Nota mas destacada:</strong> [medio y titular]</li>
 <li><strong>Tono dominante:</strong> [descripcion]</li>
@@ -315,10 +346,10 @@ def build_email_html(analysis_html: str) -> str:
 <head>
   <style>
     body  {{ font-family: Arial, sans-serif; max-width: 960px; margin: 0 auto; color: #222; }}
-    h2    {{ margin-top: 28px; padding: 8px 14px; border-radius: 6px;
-             background: #f0f4f8; border-left: 4px solid #1a5e1a;
-             font-size: 15px; font-weight: bold; }}
-    h3    {{ color: #1a5e1a; margin-top: 18px; font-size: 14px; }}
+    h2    {{ margin-top: 28px; padding: 10px 16px; border-radius: 5px;
+             background: #1a3db5; color: #fff !important;
+             font-size: 15px; font-weight: bold; letter-spacing: 0.3px; }}
+    h3    {{ color: #1a3db5; margin-top: 18px; font-size: 14px; }}
     table {{ width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }}
     th    {{ background: #1a5e1a; color: #fff; padding: 9px 12px; text-align: left; }}
     td    {{ padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: top; }}
