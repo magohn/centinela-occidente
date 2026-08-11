@@ -321,13 +321,12 @@ def collect_cycle():
 
     log(f"\n✓ Ciclo completo: {total_posts} posts · {total_news} noticias")
 
-    # Alertas pendientes
+    # Alertas — solo log, el informe diario las incluye
     pending = db.get_pending_alerts()
     if pending:
-        log(f"🚨 {len(pending)} alerta(s) — enviando notificación inmediata")
-        send_immediate_alert(pending)
+        log(f"  {len(pending)} alerta(s) registrada(s) — se incluirán en el informe diario")
     else:
-        log("✓ Sin alertas de crisis en este ciclo")
+        log("  Sin alertas en este ciclo")
 
     log("=" * 60)
 
