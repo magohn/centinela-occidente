@@ -7,7 +7,7 @@ import os
 import sys
 import json
 import smtplib
-from collections import Counter, defaultdict
+from collections import Counter
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
@@ -20,8 +20,8 @@ load_dotenv(os.path.expanduser("~/social_monitor/.env"), override=True)
 import anthropic
 import db
 from config import (
-    REPORT_RECIPIENTS, REPORTS_DIR, SENDER_NAME,
-    OPPOSITION_ACTORS, TRADITIONAL_MEDIA, LOCAL_MEDIA, AURA_ACCOUNTS,
+    REPORT_RECIPIENTS, REPORTS_DIR,
+    OPPOSITION_ACTORS, TRADITIONAL_MEDIA, LOCAL_MEDIA,
     MONITOR_KEYWORDS,
 )
 
@@ -35,60 +35,7 @@ def log(msg):
     print(f"[{ts}] {msg}", flush=True)
 
 
-# ── Métricas de fuentes ──────────────────────────────────────────────────────
-
-def build_source_activity(posts: list, news: list) -> dict:
-    """
-    Calcula qué actores tuvieron actividad y cuáles no,
-    por categoría. Devuelve diccionarios para el prompt.
-    """
-    active_actors = set(p["actor"] for p in posts) | set(n["actor"] for n in news)
-
-    def inactive(source_dict):
-        return [name for name in source_dict if name not in active_actors]
-
-    return {
-        "inactivos_opositores":  inactive(OPPOSITION_ACTORS),
-        "inactivos_trad":        inactive(TRADITIONAL_MEDIA),
-        "inactivos_locales":     inactive(LOCAL_MEDIA),
-    }
-
-
-def build_metrics(posts: list, news: list) -> dict:
-    """
-    Construye las métricas de desglose completo:
-    total escaneado → filtrado por relevancia → por actor.
-    """
-    total_escaneado   = len(posts) + len(news)
-
-    keywords_lower = [k.lower() for k in MONITOR_KEYWORDS]
-    def is_relevant(text):
-        t = (text or "").lower()
-        return any(k in t for k in keywords_lower)
-
-    relevant_posts = [p for p in posts if is_relevant(p.get("text", ""))]
-    relevant_news  = [n for n in news  if is_relevant((n.get("title","") + " " + n.get("text","")))]
-    total_relevante = len(relevant_posts) + len(relevant_news)
-
-    by_actor = Counter(
-        p["actor"] for p in (relevant_posts + relevant_news)
-    )
-
-    by_platform = Counter(p.get("platform","?") for p in posts)
-
-    return {
-        "total_escaneado":  total_escaneado,
-        "total_relevante":  total_relevante,
-        "descartado":       total_escaneado - total_relevante,
-        "pct_descartado":   round((total_escaneado - total_relevante) / max(total_escaneado, 1) * 100),
-        "por_actor":        dict(by_actor.most_common(10)),
-        "por_plataforma":   dict(by_platform),
-        "posts_total":      len(posts),
-        "news_total":       len(news),
-    }
-
-
-# ── Preparar datos para Claude ───────────────────────────────────────────────
+# ── Datos para Claude ────────────────────────────────────────────────────────
 
 def build_data_summary(posts: list, news: list) -> str:
     def fmt(items, max_items=12):
@@ -102,18 +49,31 @@ def build_data_summary(posts: list, news: list) -> str:
             for i in items[:max_items]
         ]
 
-    source_activity  = build_source_activity(posts, news)
-    metrics          = build_metrics(posts, news)
-    alerts           = db.get_pending_alerts()
-    radar_actors     = db.get_recent_alert_actors(days=30)
+    # Actores con actividad real
+    active_actors = set(p["actor"] for p in posts) | set(n["actor"] for n in news)
+
+    def inactive(source_dict):
+        return [name for name in source_dict if name not in active_actors]
+
+    # Métricas de relevancia
+    kws = [k.lower() for k in MONITOR_KEYWORDS]
+    def relevant(text):
+        return any(k in (text or "").lower() for k in kws)
+
+    rel_posts = [p for p in posts if relevant(p.get("text", ""))]
+    rel_news  = [n for n in news  if relevant(n.get("title","") + " " + n.get("text",""))]
+
+    by_platform = Counter(p.get("platform","?") for p in posts)
+
+    alerts = db.get_pending_alerts()
 
     return json.dumps({
-        "cliente":              fmt([p for p in posts if p.get("categoria") == "CLIENTE"]),
-        "opositores":           fmt([p for p in posts if p.get("categoria") == "OPOSITOR"]),
-        "medios_trad":          fmt([p for p in posts if p.get("categoria") == "MEDIO_TRADICIONAL"]),
-        "noticias_trad":        fmt([n for n in news  if n.get("categoria") == "MEDIO_TRADICIONAL"]),
-        "medios_locales":       fmt([p for p in posts if p.get("categoria") == "MEDIO_LOCAL"]),
-        "alertas":              [
+        "cliente":          fmt([p for p in posts if p.get("categoria") == "CLIENTE"]),
+        "seguimiento":      fmt([p for p in posts if p.get("categoria") == "OPOSITOR"]),
+        "medios_trad":      fmt([p for p in posts if p.get("categoria") == "MEDIO_TRADICIONAL"]),
+        "noticias_trad":    fmt([n for n in news  if n.get("categoria") == "MEDIO_TRADICIONAL"]),
+        "medios_locales":   fmt([p for p in posts if p.get("categoria") == "MEDIO_LOCAL"]),
+        "alertas":          [
             {
                 "actor":   a.get("actor"), "platform": a.get("platform"),
                 "keyword": a.get("keyword"), "text": (a.get("text") or "")[:300],
@@ -121,18 +81,22 @@ def build_data_summary(posts: list, news: list) -> str:
             }
             for a in alerts
         ],
-        "fuentes_inactivas":    source_activity,
-        "metricas":             metrics,
-        "radar_activo":         [
-            {
-                "actor":        r.get("actor"),
-                "primera_alerta": r.get("first_alert", "")[:10],
-                "ultima_alerta":  r.get("last_alert", "")[:10],
-                "total_alertas":  r.get("total_alerts"),
-                "keywords":       r.get("keywords", ""),
-            }
-            for r in radar_actors
-        ],
+        "inactivos": {
+            "seguimiento": inactive(OPPOSITION_ACTORS),
+            "trad":        inactive(TRADITIONAL_MEDIA),
+            "locales":     inactive(LOCAL_MEDIA),
+        },
+        "metricas": {
+            "total_escaneado":  len(posts) + len(news),
+            "total_relevante":  len(rel_posts) + len(rel_news),
+            "descartado":       (len(posts) + len(news)) - (len(rel_posts) + len(rel_news)),
+            "pct_relevante":    round((len(rel_posts) + len(rel_news)) / max(len(posts) + len(news), 1) * 100),
+            "posts":            len(posts),
+            "noticias_rss":     len(news),
+            "alertas_total":    len(alerts),
+            "por_plataforma":   dict(by_platform),
+            "actor_mas_activo": Counter(p["actor"] for p in posts).most_common(1)[0] if posts else None,
+        },
     }, ensure_ascii=False, indent=2)
 
 
@@ -142,221 +106,177 @@ SYSTEM_PROMPT = """Eres CENTINELA OCCIDENTE, el motor de análisis de inteligenc
 desarrollado por INSERCO para el cliente AURA MINERALS.
 
 CONTEXTO:
-- Cliente: AURA MINERALS (también conocida como Minosa, Minerales de Occidente)
-- Operación: Mina San Andrés / Mina Azacualpa, Cerro Los Hornillos — La Unión, Copán, Honduras
-- Misión: detectar riesgos reputacionales, narrativas negativas, crisis ambientales/sociales
-  y oportunidades de comunicación para proteger la operación.
-- Actores opositores monitoreados: Radio Dignidad, El Referente, Movimiento Amplio,
-  Víctor Fernández, Criterio HN, Canal 6, Contra Corriente, Radio Progreso, ASONOG.
+- Cliente: AURA MINERALS (Minosa, Minerales de Occidente)
+- Operación: Mina San Andres / Mina Azacualpa, Cerro Los Hornillos — La Union, Copan, Honduras
+- Mision: detectar riesgos reputacionales, narrativas negativas, crisis ambientales/sociales
+  y oportunidades de comunicacion para proteger la operacion.
+- Actores en seguimiento: Radio Dignidad, El Referente, Movimiento Amplio, Victor Fernandez,
+  Criterio HN, Canal 6, Contra Corriente, Radio Progreso, ASONOG.
 
-REGLAS OBLIGATORIAS (aplican a TODOS los informes):
+REGLAS OBLIGATORIAS — aplican sin excepcion a todos los informes:
 
-R1. Usa ÚNICAMENTE etiquetas HTML válidas. NUNCA uses markdown.
-R2. La red social X (antes Twitter) siempre se llama "X", nunca "Twitter".
-R3. Analiza ÚNICAMENTE los datos reales proporcionados. No inventes información.
+R1. USA UNICAMENTE etiquetas HTML validas. NUNCA uses markdown.
 
-R4. ESTRUCTURA EN DOS CAPAS:
-    - CAPA 1 Resumen Ejecutivo: narrativa fluida en prosa (3-5 párrafos, SIN subtítulos
-      decorativos, SIN viñetas). Máx. 1 página, lectura < 2 minutos.
-      Contenido: nivel de riesgo, narrativa dominante (propia y opositora), hecho más
-      relevante, alertas activas (solo titular 1-2 líneas c/u), acciones recomendadas
-      (solo título + urgencia ALTA/MEDIA/BAJA), métrica clave al cierre.
-    - CAPA 2 Anexo Detallado: contexto completo. Cada hallazgo se desarrolla UNA sola vez.
-      El Resumen lo referencia brevemente; NUNCA repitas el mismo contexto, cita o cifra.
+R2. La red social X (antes Twitter) se llama SIEMPRE "X".
 
-R5. FUENTES INACTIVAS: no crear un encabezado individual por cada fuente sin actividad.
-    Consolidar en UNA sola línea al final de la sección:
-    "<em>Sin actividad registrada: Fuente1, Fuente2, Fuente3.</em>"
+R3. Analiza UNICAMENTE los datos reales proporcionados. No inventes informacion.
 
-R6. ALERTAS CON INDIVIDUOS: el sujeto de la alerta es la organización o narrativa emergente,
-    nunca la persona. El nombre puede aparecer como contexto en el cuerpo, pero NUNCA en el
-    título o clasificación de la alerta. No incluir valoraciones sobre la persona más allá
-    de lo que ella misma comunicó públicamente.
+R4. SIN EMOJIS NI ICONOS en ningun encabezado, viñeta ni cuerpo de texto.
+    Los titulos van en texto plano con numeracion y mayusculas/negrita.
 
-R7. MÉTRICAS: mostrar siempre el desglose completo:
-    total escaneado → total relevante al cliente → por actor.
-    Si hay diferencia grande, indicar % descartado por no relacionarse con el cliente.
+R5. TERMINOLOGIA — nunca usar "crisis" para personas u organizaciones opositoras
+    como clasificacion por defecto. "Crisis" se reserva para amenaza real y directa
+    contra la operacion del cliente. Usar "Alerta" o "Bajo el radar" en su lugar.
+    La seccion 6 se llama "Alertas", no "Alertas de Crisis".
 
-R8. FIRMA Y ATRIBUCIÓN: NUNCA incluir nombres de personas en firma, pie o atribución.
-    Cerrar únicamente con: "Informe generado por CENTINELA OCCIDENTE —
-    Motor de Inteligencia Digital INSERCO."
+R6. CLASIFICACION CONFIDENCIAL siempre visible — el texto "CONFIDENCIAL" debe aparecer
+    en el encabezado y en el pie de todo informe, sin excepcion.
 
-R9. FILTRO DE RELEVANCIA EN COBERTURA DE MEDIOS: si un actor publicó contenido sin ninguna
-    relación con el cliente o su entorno de riesgo, NO enumerar sus titulares. En su lugar,
-    una sola línea: "[Actor]: actividad registrada sin relación con el cliente (N publicaciones
-    de actualidad general)." Solo detallar cuando exista conexión real con el cliente, su
-    operación o entorno de riesgo (agua, territorio, minería, etc.).
+R7. SIN NOMBRES PERSONALES en firma, atribucion ni pie de pagina. Cerrar unicamente con:
+    "Informe generado por CENTINELA OCCIDENTE — Motor de Inteligencia Digital INSERCO."
 
-R10. ACTORES EN RADAR ACTIVO (continuidad): un actor con alerta abierta NUNCA debe pasar a
-     "sin actividad registrada" sin contexto. En el Anexo, sección J, incluir siempre la tabla
-     de radar activo con los actores de "radar_activo" del JSON. Para cada uno:
-     - Si tuvo actividad nueva hoy: indicar qué publicó y cómo evoluciona la alerta.
-     - Si NO tuvo actividad nueva: "[Actor]: bajo monitoreo intensificado desde [fecha] —
-       sin actividad nueva en este período; seguimiento continúa."
-     Una alerta solo se retira cuando se cierra explícitamente (con motivo y fecha), NUNCA
-     por omisión ni agrupándola con inactivos genéricos.
+R8. RELEVANCIA: no describir ni listar titulares de actores/medios sin relacion con el
+    cliente, su operacion o su entorno de riesgo (agua, territorio, mineria, ambiente).
+    Si un actor publico solo contenido de actualidad general, una sola linea:
+    "[Actor]: actividad registrada sin relacion con el cliente."
+
+R9. TERMINOLOGIA — reemplazar "Opositores" por "Medios en Seguimiento" en todo el documento.
+
+R10. FUENTES INACTIVAS — no crear un encabezado individual por cada fuente sin actividad.
+     Consolidar en una sola linea: "Sin actividad registrada: Fuente1, Fuente2, Fuente3."
 """
 
-DAILY_PROMPT = """Analiza los datos de monitoreo digital del día {date} y genera el
+DAILY_PROMPT = """Analiza los datos de monitoreo digital del {date} y genera el
 INFORME DIARIO de CENTINELA OCCIDENTE para AURA MINERALS.
 
-PERÍODO: Últimas 24 horas ({period_start} → {period_end})
+PERIODO: Ultimas 24 horas ({period_start} al {period_end})
 
 DATOS:
 {data}
 
-Genera el informe en HTML limpio siguiendo la ESTRUCTURA EN DOS CAPAS:
+Genera el informe en HTML limpio con EXACTAMENTE estos 9 numerales, en este orden:
 
-═══════════════════════════════════════════════════════════
-CAPA 1 — RESUMEN EJECUTIVO
-(Máx. 1 página — solo lo que un ejecutivo necesita leer)
-═══════════════════════════════════════════════════════════
+<h2>1. RESUMEN EJECUTIVO</h2>
+<ul>
+<li><strong>Nivel de riesgo del dia:</strong> ALTO / MEDIO / BAJO — [razon en una oracion]</li>
+<li><strong>Narrativa dominante sobre Aura Minerals:</strong> [descripcion]</li>
+<li><strong>Hecho mas relevante:</strong> [descripcion]</li>
+<li><strong>Actores mas activos:</strong> [lista]</li>
+<li><strong>Accion inmediata requerida:</strong> Si / No — [por que]</li>
+</ul>
 
-<div class="exec-summary">
-<h2>RESUMEN EJECUTIVO · {date}</h2>
-
-Escribe una narrativa fluida (3-5 párrafos sin sub-encabezados decorativos) que cubra:
-- Nivel de riesgo del día: ALTO / MEDIO / BAJO con razón en una oración.
-- Narrativa dominante (qué dice el entorno sobre Aura Minerals hoy).
-- Hecho más relevante del período.
-- Alertas activas: solo el titular de cada una y urgencia (1-2 líneas por alerta).
-  Si involucra a una persona, el sujeto debe ser la organización/narrativa, no el individuo.
-- Acciones recomendadas: solo título + nivel de urgencia (ALTA/MEDIA/BAJA), sin contexto.
-- Métrica clave al final: "Publicaciones relevantes: X de Y escaneadas (Z% relacionadas con el cliente)."
-
-No uses listas de viñetas en el Resumen Ejecutivo. Prosa directa.
-</div>
-
-═══════════════════════════════════════════════════════════
-CAPA 2 — ANEXO DETALLADO
-(Contexto completo para el equipo — sin repetir lo del Resumen)
-═══════════════════════════════════════════════════════════
-
-<h2>A. COBERTURA Y SENTIMIENTO — AURA MINERALS</h2>
-Análisis completo de todo lo publicado sobre Aura Minerals / Minosa / Azacualpa.
+<h2>2. COBERTURA Y SENTIMIENTO — AURA MINERALS</h2>
+Analisis de todo lo publicado sobre Aura Minerals / Minosa / Azacualpa.
 <ul>
 <li><strong>Sentimiento general:</strong> POSITIVO / NEUTRAL / NEGATIVO / MIXTO</li>
-<li><strong>Desglose estimado:</strong> X% Positivo / X% Neutral / X% Negativo</li>
-<li><strong>Publicación más relevante:</strong> [fuente y contenido]</li>
-<li><strong>Narrativa en construcción:</strong> [descripción]</li>
+<li><strong>Porcentaje estimado:</strong> [X% Positivo / X% Neutral / X% Negativo]</li>
+<li><strong>Publicacion mas relevante:</strong> [fuente y contenido]</li>
+<li><strong>Narrativa en construccion:</strong> [descripcion]</li>
 <li><strong>Temas asociados hoy:</strong> [lista]</li>
 </ul>
 
-<h2>B. ACTORES OPOSITORES — ANÁLISIS DETALLADO</h2>
-Para cada actor CON actividad relevante, crea una subsección <h3>:
+<h2>3. MEDIOS EN SEGUIMIENTO</h2>
+Analisis de: Radio Dignidad, El Referente, Movimiento Amplio, Victor Fernandez,
+Criterio HN, Canal 6, Contra Corriente, Radio Progreso, ASONOG.
+
+Para cada actor CON actividad relacionada con el cliente o su entorno de riesgo:
 <h3>[Nombre del actor]</h3>
 <ul>
-<li><strong>Actividad:</strong> [resumen de publicaciones]</li>
-<li><strong>Narrativa:</strong> [mensaje que están construyendo]</li>
-<li><strong>Nivel de amenaza:</strong> ALTO / MEDIO / BAJO</li>
+<li><strong>Actividad:</strong> [resumen de publicaciones relevantes]</li>
+<li><strong>Narrativa:</strong> [mensaje que estan construyendo]</li>
+<li><strong>Nivel de seguimiento:</strong> ALTO / MEDIO / BAJO</li>
 <li><strong>Alcance estimado:</strong> alto / medio / bajo</li>
 </ul>
-Al final de esta sección, UNA sola línea para los inactivos:
-<p><em>Sin actividad registrada: [lista de actores inactivos separados por coma]</em></p>
 
-<h2>C. MEDIOS DE COMUNICACIÓN TRADICIONALES</h2>
+Si un actor publico solo contenido sin relacion con el cliente, una sola linea:
+"[Actor]: actividad registrada sin relacion con el cliente."
+
+Al final, una sola linea consolidada para los completamente inactivos:
+<p><em>Sin actividad registrada: [lista separada por coma]</em></p>
+
+<h2>4. MEDIOS DE COMUNICACION TRADICIONALES</h2>
+Analisis de HCH, TSI, Tu Nota, Once Noticias, QHubo, La Prensa, La Tribuna,
+HRN, Radio America, Radio Cadena Voces.
 <ul>
 <li><strong>Sentimiento general:</strong> POSITIVO / NEUTRAL / NEGATIVO / MIXTO</li>
-<li><strong>Medio más activo:</strong> [nombre y enfoque]</li>
-<li><strong>Nota más destacada:</strong> [medio y titular]</li>
-<li><strong>Tono dominante:</strong> [descripción]</li>
+<li><strong>Medio mas activo cubriendo el tema:</strong> [nombre y enfoque]</li>
+<li><strong>Nota mas destacada:</strong> [medio y titular]</li>
+<li><strong>Tono dominante:</strong> [descripcion]</li>
 </ul>
-<p><em>Sin actividad registrada: [lista de medios sin cobertura]</em></p>
+Solo incluir medios con cobertura relacionada al cliente o su entorno de riesgo.
+Para los que publicaron sin relacion: una sola linea por medio: "[Medio]: actividad registrada sin relacion con el cliente."
+Medios completamente inactivos: <p><em>Sin actividad registrada: [lista]</em></p>
 
-<h2>D. MEDIOS LOCALES — COPÁN</h2>
+<h2>5. MEDIOS LOCALES</h2>
+Analisis de Copan TV, Ramon Rojas, Jorge Posadas y medios de La Union, Copan.
 <ul>
 <li><strong>Actividad registrada:</strong> [resumen o "Sin datos"]</li>
-<li><strong>Tono:</strong> [descripción o "Sin datos"]</li>
-<li><strong>Nota más relevante:</strong> [contenido o "Sin datos"]</li>
+<li><strong>Tono:</strong> [descripcion o "Sin datos"]</li>
+<li><strong>Nota mas relevante:</strong> [contenido o "Sin datos"]</li>
 </ul>
-<p><em>Sin actividad registrada: [lista de medios locales inactivos]</em></p>
+<p><em>Sin actividad registrada: [lista de medios locales sin actividad]</em></p>
 
-<h2>E. ALERTAS DE CRISIS — CONTEXTO COMPLETO</h2>
-Para cada alerta (el sujeto es siempre la organización o narrativa, nunca el individuo):
-<h3>[Organización/Narrativa — NO el nombre de persona]</h3>
+<h2>6. ALERTAS</h2>
+Publicaciones con palabras clave de riesgo para la operacion.
+IMPORTANTE: el termino "crisis" solo se usa cuando hay amenaza real y directa
+contra la operacion. Para menciones de actores opositores, usar "Alerta" o "Bajo el radar".
+El titulo de la alerta NUNCA debe ser el nombre de una persona — usar la organizacion
+o la narrativa como sujeto.
+
+Para cada alerta:
+<h3>[Organizacion o narrativa — nunca un nombre de persona como titulo]</h3>
 <ul>
-<li><strong>Actor que publicó:</strong> [nombre de la organización/medio]</li>
+<li><strong>Actor:</strong> [nombre de la organizacion o medio]</li>
 <li><strong>Plataforma:</strong> [X / Facebook / RSS]</li>
-<li><strong>Keyword detectada:</strong> [palabra clave]</li>
-<li><strong>Nivel:</strong> ALTO / MEDIO / BAJO</li>
-<li><strong>Descripción completa:</strong> [qué se dice, contexto y alcance estimado]</li>
-<li><strong>Acción sugerida:</strong> [respuesta recomendada y tiempo]</li>
+<li><strong>Palabra clave detectada:</strong> [keyword]</li>
+<li><strong>Clasificacion:</strong> Alerta ALTA / Alerta MEDIA / Bajo el radar</li>
+<li><strong>Descripcion:</strong> [que se dice y alcance estimado]</li>
+<li><strong>Accion sugerida:</strong> [respuesta recomendada y tiempo]</li>
 </ul>
-Si no hay alertas: <p><em>Sin alertas de crisis en las últimas 24 horas.</em></p>
+Si no hay alertas: <p><em>Sin alertas en las ultimas 24 horas.</em></p>
 
-<h2>F. OPORTUNIDADES DETECTADAS</h2>
+<h2>7. OPORTUNIDADES DETECTADAS</h2>
+Espacios para posicionamiento positivo, correccion de narrativas o comunicacion proactiva.
 <ul>
-<li><strong>Oportunidad:</strong> [descripción concreta]</li>
-<li><strong>Cómo aprovecharla:</strong> [acción específica]</li>
+<li><strong>Oportunidad:</strong> [descripcion concreta]</li>
+<li><strong>Como aprovecharla:</strong> [accion especifica]</li>
 <li><strong>Urgencia:</strong> Inmediata / Esta semana / Este mes</li>
 </ul>
 Si no hay oportunidades: <p><em>Sin oportunidades destacadas hoy.</em></p>
 
-<h2>G. PALABRAS Y FRASES MÁS UTILIZADAS</h2>
-Las 10 palabras/frases más repetidas asociadas a Aura Minerals:
-<table>
-  <tr><th>Palabra/Frase</th><th>Frecuencia</th><th>Contexto de uso</th></tr>
-  [filas]
-</table>
-
-<h2>H. MÉTRICAS DETALLADAS</h2>
-Muestra el desglose completo — nunca dejes una cifra total sin su explicación:
+<h2>8. METRICAS DEL DIA</h2>
 <ul>
 <li><strong>Total escaneado:</strong> [N posts + N noticias RSS = N total]</li>
 <li><strong>Total relevante (relacionado con el cliente):</strong> [N — X% del total]</li>
-<li><strong>Descartado por no relacionarse:</strong> [N — Y% del total]</li>
-<li><strong>Por actor (top activos):</strong> [lista Actor: N publicaciones]</li>
-<li><strong>Por plataforma:</strong> [X: N · Facebook: N · RSS: N]</li>
-<li><strong>Alertas generadas:</strong> [N]</li>
-<li><strong>Actor más activo:</strong> [nombre]</li>
+<li><strong>Descartado (sin relacion con el cliente):</strong> [N — Y% del total]</li>
+<li><strong>Publicaciones sobre Aura Minerals:</strong> [numero]</li>
+<li><strong>Actor mas activo:</strong> [nombre]</li>
+<li><strong>Plataforma mas activa:</strong> [X / Facebook / RSS]</li>
+<li><strong>Alertas generadas:</strong> [numero]</li>
 </ul>
 
-<h2>I. ACCIONES RECOMENDADAS — CONTEXTO COMPLETO</h2>
-Exactamente 3 acciones priorizadas. El Resumen Ejecutivo solo puso el título y urgencia;
-aquí va el contexto completo:
-<h3>[Título Acción 1]</h3>
+<h2>9. ACCIONES RECOMENDADAS</h2>
+Exactamente 3 acciones priorizadas por urgencia:
+<h3>[Titulo Accion 1]</h3>
 <ul>
-<li><strong>Contexto:</strong> [por qué es necesaria ahora]</li>
-<li><strong>Acción:</strong> [qué hacer exactamente]</li>
+<li><strong>Contexto:</strong> [por que es necesaria ahora]</li>
+<li><strong>Accion:</strong> [que hacer exactamente]</li>
 <li><strong>Urgencia:</strong> ALTA / MEDIA / BAJA</li>
 </ul>
-<h3>[Título Acción 2]</h3>
+<h3>[Titulo Accion 2]</h3>
 <ul>
 <li><strong>Contexto:</strong> [...]</li>
-<li><strong>Acción:</strong> [...]</li>
+<li><strong>Accion:</strong> [...]</li>
 <li><strong>Urgencia:</strong> [...]</li>
 </ul>
-<h3>[Título Acción 3]</h3>
+<h3>[Titulo Accion 3]</h3>
 <ul>
 <li><strong>Contexto:</strong> [...]</li>
-<li><strong>Acción:</strong> [...]</li>
+<li><strong>Accion:</strong> [...]</li>
 <li><strong>Urgencia:</strong> [...]</li>
 </ul>
 
-<h2>J. ACTORES EN RADAR ACTIVO</h2>
-Usa los datos de "radar_activo" del JSON. Esta sección SIEMPRE aparece si hay actores
-con alertas abiertas en los últimos 30 días. Para cada actor:
-
-- Si tuvo actividad nueva hoy: indica qué publicó, cómo evoluciona la alerta y si
-  el nivel de amenaza subió, bajó o se mantiene.
-- Si NO tuvo actividad nueva: "[Actor]: bajo monitoreo intensificado desde [primera_alerta]
-  — sin actividad nueva en este período; seguimiento continúa."
-
-Presenta esta sección como tabla HTML:
-<table>
-  <tr>
-    <th>Actor</th>
-    <th>En radar desde</th>
-    <th>Última alerta</th>
-    <th>Keywords registradas</th>
-    <th>Estado hoy</th>
-  </tr>
-  [una fila por actor en radar_activo]
-</table>
-
-Si "radar_activo" está vacío: <p><em>Sin actores bajo vigilancia activa en los últimos 30 días.</em></p>
-
-<p style="margin-top:32px;font-size:12px;color:#555;text-align:center">
+<p style="margin-top:32px;font-size:12px;color:#555;text-align:center;border-top:1px solid #ddd;padding-top:12px">
   Informe generado por CENTINELA OCCIDENTE — Motor de Inteligencia Digital INSERCO.
 </p>"""
 
@@ -370,12 +290,12 @@ def analyze_daily(data_summary: str) -> str:
 
     msg = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=12000,
+        max_tokens=10000,
         system=SYSTEM_PROMPT,
         messages=[{
             "role": "user",
             "content": DAILY_PROMPT.format(
-                date=now.strftime("%d de %B, %Y"),
+                date=now.strftime("%d de %B de %Y"),
                 period_start=since,
                 period_end=now.strftime("%d/%m %H:%M"),
                 data=data_summary,
@@ -389,148 +309,94 @@ def analyze_daily(data_summary: str) -> str:
 
 def build_email_html(analysis_html: str) -> str:
     now      = datetime.now()
-    date_str = now.strftime("%d de %B, %Y · %H:%M")
+    date_str = now.strftime("%d de %B de %Y · %H:%M")
 
-    return f"""
-    <html>
-    <head>
-      <style>
-        body  {{ font-family: Arial, sans-serif; max-width: 980px; margin: 0 auto; color: #222; }}
-
-        /* ── Resumen Ejecutivo — fondo levemente diferenciado ── */
-        .exec-summary {{
-          background: #fafff9;
-          border: 2px solid #1a5e1a;
-          border-radius: 8px;
-          padding: 20px 24px;
-          margin-bottom: 28px;
-        }}
-        .exec-summary h2 {{
-          margin-top: 0;
-          padding: 0 0 10px 0;
-          border-bottom: 2px solid #1a5e1a;
-          background: transparent;
-          color: #1a5e1a;
-          font-size: 16px;
-          letter-spacing: 0.5px;
-          text-transform: uppercase;
-        }}
-        .exec-summary p {{ line-height: 1.7; margin: 0 0 12px 0; font-size: 14px; }}
-
-        /* ── Separador de capas ── */
-        .layer-divider {{
-          border: none;
-          border-top: 3px dashed #1a5e1a;
-          margin: 32px 0 24px;
-          opacity: 0.35;
-        }}
-        .layer-label {{
-          text-align: center;
-          font-size: 11px;
-          color: #888;
-          letter-spacing: 2px;
-          text-transform: uppercase;
-          margin: -14px 0 24px;
-        }}
-
-        h2    {{ margin-top: 28px; padding: 8px 14px; border-radius: 6px;
-                 background: #f0f4f8; border-left: 4px solid #1a5e1a; font-size: 15px; }}
-        h3    {{ color: #1a5e1a; margin-top: 18px; font-size: 14px; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }}
-        th    {{ background: #1a5e1a; color: #fff; padding: 9px 12px; text-align: left; }}
-        td    {{ padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: top; }}
-        tr:nth-child(even) {{ background: #f7f9fc; }}
-        a     {{ color: #2980b9; }}
-        p     {{ line-height: 1.6; }}
-        ul    {{ margin: 6px 0; padding-left: 20px; }}
-        li    {{ margin-bottom: 4px; line-height: 1.5; font-size: 14px; }}
-
-        /* ── Confidencial badge ── */
-        .confidencial-badge {{
-          display: inline-block;
-          background: #c0392b;
-          color: #fff;
-          font-size: 10px;
-          font-weight: 900;
-          letter-spacing: 2px;
-          padding: 3px 10px;
-          border-radius: 3px;
-          margin-left: 10px;
-          vertical-align: middle;
-        }}
-
-        /* ── Watermark para impresión/PDF ── */
-        @media print {{
-          body::before {{
-            content: "CONFIDENCIAL";
-            position: fixed;
-            top: 40%;
-            left: 50%;
-            transform: translate(-50%, -50%) rotate(-45deg);
-            font-size: 80px;
-            font-weight: 900;
-            color: rgba(192, 57, 43, 0.08);
-            pointer-events: none;
-            z-index: 9999;
-            white-space: nowrap;
-          }}
-        }}
-      </style>
-    </head>
-    <body>
-      <!-- ENCABEZADO CON CONFIDENCIAL -->
-      <div style="background:#1a5e1a;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0">
-        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-          <span style="font-size:40px">🗺️</span>
-          <div style="flex:1">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <h1 style="margin:0;font-size:22px;font-weight:900;letter-spacing:1px">CENTINELA OCCIDENTE</h1>
-              <span style="background:#c0392b;color:#fff;font-size:10px;font-weight:900;
-                           letter-spacing:2px;padding:3px 10px;border-radius:3px">CONFIDENCIAL</span>
-            </div>
-            <div style="font-size:12px;opacity:.80;margin-top:3px">
-              Desarrollado por: <b>INSERCO</b> · Cliente: <b>AURA MINERALS</b>
-            </div>
-            <div style="font-size:11px;opacity:.65;margin-top:2px;text-transform:uppercase;letter-spacing:2px">
-              Inteligencia Digital · La Unión, Copán, Honduras
-            </div>
-          </div>
+    return f"""<html>
+<head>
+  <style>
+    body  {{ font-family: Arial, sans-serif; max-width: 960px; margin: 0 auto; color: #222; }}
+    h2    {{ margin-top: 28px; padding: 8px 14px; border-radius: 6px;
+             background: #f0f4f8; border-left: 4px solid #1a5e1a;
+             font-size: 15px; font-weight: bold; }}
+    h3    {{ color: #1a5e1a; margin-top: 18px; font-size: 14px; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }}
+    th    {{ background: #1a5e1a; color: #fff; padding: 9px 12px; text-align: left; }}
+    td    {{ padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: top; }}
+    tr:nth-child(even) {{ background: #f7f9fc; }}
+    a     {{ color: #2980b9; }}
+    p     {{ line-height: 1.6; }}
+    ul    {{ margin: 6px 0; padding-left: 20px; }}
+    li    {{ margin-bottom: 5px; line-height: 1.5; font-size: 14px; }}
+    @media print {{
+      body::before {{
+        content: "CONFIDENCIAL";
+        position: fixed; top: 40%; left: 50%;
+        transform: translate(-50%, -50%) rotate(-45deg);
+        font-size: 80px; font-weight: 900;
+        color: rgba(192, 57, 43, 0.07);
+        pointer-events: none; z-index: 9999; white-space: nowrap;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <!-- ENCABEZADO -->
+  <div style="background:#1a5e1a;color:#fff;padding:20px 24px;border-radius:8px 8px 0 0">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <h1 style="margin:0;font-size:22px;font-weight:900;letter-spacing:1px">
+            CENTINELA OCCIDENTE
+          </h1>
+          <span style="background:#c0392b;color:#fff;font-size:10px;font-weight:900;
+                       letter-spacing:2px;padding:3px 10px;border-radius:3px">
+            CONFIDENCIAL
+          </span>
         </div>
-        <p style="margin:12px 0 0;opacity:.75;font-size:13px;
-                  border-top:1px solid rgba(255,255,255,.25);padding-top:10px">
-          📅 {date_str}
-        </p>
-      </div>
-
-      <div style="padding:20px;background:#fff;border:1px solid #ddd;
-                  border-top:none;border-radius:0 0 8px 8px">
-        <!-- Chips de cobertura -->
-        <div style="background:#e8f5e9;border-left:4px solid #1a5e1a;
-                    padding:10px 14px;border-radius:4px;margin-bottom:20px;font-size:13px">
-          <strong>Monitoreando:</strong> Aura Minerals · Minosa · Mina Azacualpa · Cerro Los Hornillos<br>
-          <strong>Opositores:</strong> Radio Dignidad · El Referente · Movimiento Amplio · Víctor Fernández ·
-          Criterio HN · Canal 6 · Contra Corriente · Radio Progreso · ASONOG<br>
-          <strong>Medios:</strong> HCH · TSI · Tu Nota · Once Noticias · QHubo · La Prensa ·
-          La Tribuna · HRN · Radio América · Cadena Voces · Copan TV · Ramón Rojas · Jorge Posadas
+        <div style="font-size:12px;opacity:.82;margin-top:4px">
+          Desarrollado por: <strong>INSERCO</strong> &nbsp;·&nbsp; Cliente: <strong>AURA MINERALS</strong>
         </div>
-
-        {analysis_html}
-
-        <!-- LÍNEA FINAL DE RESTRICCIÓN -->
-        <p style="font-size:12px;color:#888;border-top:1px solid #eee;
-                  padding-top:12px;margin-top:28px;text-align:center">
-          Este documento no debe reenviarse ni citarse sin autorización de INSERCO.
-        </p>
+        <div style="font-size:11px;opacity:.65;margin-top:2px;text-transform:uppercase;letter-spacing:2px">
+          Inteligencia Digital · La Union, Copan, Honduras
+        </div>
       </div>
+    </div>
+    <p style="margin:12px 0 0;opacity:.75;font-size:13px;
+              border-top:1px solid rgba(255,255,255,.25);padding-top:10px">
+      {date_str}
+    </p>
+  </div>
 
-      <!-- PIE DE PÁGINA -->
-      <p style="color:#aaa;font-size:11px;text-align:center;margin-top:10px;padding:0 10px">
-        🗺️ CENTINELA OCCIDENTE — Desarrollado por INSERCO · Inteligencia Digital Honduras<br>
-        <span style="color:#c0392b;font-weight:bold">CONFIDENCIAL</span> —
-        Distribución limitada a AURA MINERALS y equipo Inserco autorizado.
-      </p>
-    </body>
-    </html>"""
+  <div style="padding:20px;background:#fff;border:1px solid #ddd;
+              border-top:none;border-radius:0 0 8px 8px">
+
+    <!-- Bloque de cobertura -->
+    <div style="background:#e8f5e9;border-left:4px solid #1a5e1a;
+                padding:10px 14px;border-radius:4px;margin-bottom:20px;font-size:13px">
+      <strong>Monitoreando:</strong> Aura Minerals · Minosa · Mina Azacualpa · Cerro Los Hornillos<br>
+      <strong>Medios en Seguimiento:</strong> Radio Dignidad · El Referente · Movimiento Amplio ·
+      Victor Fernandez · Criterio HN · Canal 6 · Contra Corriente · Radio Progreso · ASONOG<br>
+      <strong>Medios:</strong> HCH · TSI · Tu Nota · Once Noticias · QHubo · La Prensa ·
+      La Tribuna · HRN · Radio America · Cadena Voces · Copan TV · Ramon Rojas · Jorge Posadas
+    </div>
+
+    {analysis_html}
+
+    <!-- Linea final de restriccion -->
+    <p style="font-size:12px;color:#888;border-top:1px solid #eee;
+              padding-top:12px;margin-top:28px;text-align:center">
+      Este documento no debe reenviarse ni citarse sin autorizacion de INSERCO.
+    </p>
+  </div>
+
+  <!-- PIE -->
+  <p style="color:#aaa;font-size:11px;text-align:center;margin-top:10px;padding:0 10px">
+    CENTINELA OCCIDENTE — Desarrollado por INSERCO · Inteligencia Digital Honduras<br>
+    <span style="color:#c0392b;font-weight:bold">CONFIDENCIAL</span> —
+    Distribucion limitada a AURA MINERALS y equipo INSERCO autorizado.
+  </p>
+</body>
+</html>"""
 
 
 # ── Guardar reporte ──────────────────────────────────────────────────────────
@@ -543,7 +409,7 @@ def save_local_report(html: str) -> str:
     path     = os.path.join(dir_path, filename)
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-    log(f"  ✓ Reporte guardado: {path}")
+    log(f"  Reporte guardado: {path}")
     return path
 
 
@@ -561,25 +427,25 @@ def send_email(html: str, subject: str):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
         s.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         s.sendmail(GMAIL_USER, recipients, msg.as_string())
-    log(f"  ✓ Email enviado (BCC) a {len(recipients)} destinatario(s)")
+    log(f"  Email enviado (BCC) a {len(recipients)} destinatario(s)")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     log("=" * 60)
-    log("CENTINELA OCCIDENTE — Módulo de entrega iniciado")
+    log("CENTINELA OCCIDENTE — Modulo de entrega iniciado")
     db.init_db()
 
     now = datetime.now()
 
-    log("→ Cargando datos de las últimas 24h…")
+    log("Cargando datos de las ultimas 24h...")
     posts = db.get_today_posts()
     news  = db.get_today_news()
     log(f"   {len(posts)} posts · {len(news)} noticias")
 
     if posts or news:
-        log("→ Analizando con Claude AI…")
+        log("Analizando con Claude AI...")
         data_summary  = build_data_summary(posts, news)
         analysis_html = analyze_daily(data_summary)
 
@@ -587,15 +453,15 @@ def main():
         save_local_report(email_html)
 
         subject = (
-            f"🗺️ [CONFIDENCIAL] CENTINELA OCCIDENTE — "
+            f"[CONFIDENCIAL] CENTINELA OCCIDENTE — "
             f"{now.strftime('%d/%m/%Y')} · Informe Diario"
         )
-        log("→ Enviando informe…")
+        log("Enviando informe...")
         send_email(email_html, subject)
     else:
-        log("  ⚠️  Sin datos para el informe (¿collect.py corrió?)")
+        log("  Sin datos para el informe (collect.py corrio?)")
 
-    log("✓ Entrega completa")
+    log("Entrega completa")
     log("=" * 60)
 
 
