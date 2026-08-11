@@ -20,7 +20,7 @@ load_dotenv(os.path.expanduser("~/social_monitor/.env"), override=True)
 import anthropic
 import db
 from config import (
-    REPORT_RECIPIENTS, REPORTS_DIR,
+    REPORT_RECIPIENTS, REPORT_BCC, REPORTS_DIR,
     OPPOSITION_ACTORS, TRADITIONAL_MEDIA, LOCAL_MEDIA,
     MONITOR_KEYWORDS,
 )
@@ -447,18 +447,21 @@ def save_local_report(html: str) -> str:
 # ── Envío de email ───────────────────────────────────────────────────────────
 
 def send_email(html: str, subject: str):
-    recipients = REPORT_RECIPIENTS if isinstance(REPORT_RECIPIENTS, list) else [REPORT_RECIPIENTS]
+    to_list  = REPORT_RECIPIENTS if isinstance(REPORT_RECIPIENTS, list) else [REPORT_RECIPIENTS]
+    bcc_list = REPORT_BCC if isinstance(REPORT_BCC, list) else [REPORT_BCC]
+    all_rcpt = to_list + bcc_list
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = GMAIL_USER
-    msg["To"]      = GMAIL_USER
-    msg["Bcc"]     = ", ".join(recipients)
+    msg["From"]    = f"CENTINELA OCCIDENTE <{GMAIL_USER}>"
+    msg["To"]      = ", ".join(to_list)
+    msg["Bcc"]     = ", ".join(bcc_list)
     msg.attach(MIMEText(html, "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
         s.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        s.sendmail(GMAIL_USER, recipients, msg.as_string())
-    log(f"  Email enviado (BCC) a {len(recipients)} destinatario(s)")
+        s.sendmail(GMAIL_USER, all_rcpt, msg.as_string())
+    log(f"  Email enviado a {len(to_list)} destinatario(s) + {len(bcc_list)} BCC")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

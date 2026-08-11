@@ -153,7 +153,13 @@ else:
     ENV_PATH    = os.path.expanduser("~/social_monitor/.env")
     LOG_PATH    = os.path.join(BASE_DIR, "occidente.log")
 
-REPORT_RECIPIENTS = ["max.gonzaleshn@gmail.com"]
+REPORT_RECIPIENTS = [
+    "maxgonzales1981@gmail.com",
+    "fpereira@auraminerals.com",
+]
+REPORT_BCC = [
+    "alefrico@gmail.com",
+]
 SENDER_NAME       = "🗺️ CENTINELA OCCIDENTE"
 
 MAX_TWEETS_PER_PROFILE = 15
