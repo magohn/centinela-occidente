@@ -49,30 +49,43 @@ def build_data_summary(posts: list, news: list) -> str:
             for i in items[:max_items]
         ]
 
-    # Actores con actividad real
-    active_actors = set(p["actor"] for p in posts) | set(n["actor"] for n in news)
-
-    def inactive(source_dict):
-        return [name for name in source_dict if name not in active_actors]
-
-    # Métricas de relevancia
+    # Filtro de relevancia — solo pasan posts que mencionan al cliente o su entorno
     kws = [k.lower() for k in MONITOR_KEYWORDS]
     def relevant(text):
         return any(k in (text or "").lower() for k in kws)
 
-    rel_posts = [p for p in posts if relevant(p.get("text", ""))]
-    rel_news  = [n for n in news  if relevant(n.get("title","") + " " + n.get("text",""))]
+    # Posts del cliente: siempre relevantes
+    # Posts de otros actores: solo si mencionan palabras clave del cliente
+    def filter_posts(categoria):
+        return [p for p in posts
+                if p.get("categoria") == categoria
+                and (categoria == "CLIENTE" or relevant(p.get("text", "")))]
 
-    by_platform = Counter(p.get("platform","?") for p in posts)
+    def filter_news(categoria):
+        return [n for n in news
+                if n.get("categoria") == categoria
+                and relevant(n.get("title","") + " " + n.get("text",""))]
+
+    rel_posts = filter_posts("CLIENTE") + \
+                [p for p in posts if p.get("categoria") != "CLIENTE" and relevant(p.get("text",""))]
+    rel_news  = [n for n in news if relevant(n.get("title","") + " " + n.get("text",""))]
+
+    # Actores con actividad RELEVANTE (no simplemente cualquier actividad)
+    active_relevant = set(p["actor"] for p in rel_posts) | set(n["actor"] for n in rel_news)
+
+    def inactive(source_dict):
+        return [name for name in source_dict if name not in active_relevant]
+
+    by_platform = Counter(p.get("platform","?") for p in rel_posts)
 
     alerts = db.get_pending_alerts()
 
     return json.dumps({
-        "cliente":          fmt([p for p in posts if p.get("categoria") == "CLIENTE"]),
-        "seguimiento":      fmt([p for p in posts if p.get("categoria") == "OPOSITOR"]),
-        "medios_trad":      fmt([p for p in posts if p.get("categoria") == "MEDIO_TRADICIONAL"]),
-        "noticias_trad":    fmt([n for n in news  if n.get("categoria") == "MEDIO_TRADICIONAL"]),
-        "medios_locales":   fmt([p for p in posts if p.get("categoria") == "MEDIO_LOCAL"]),
+        "cliente":          fmt(filter_posts("CLIENTE")),
+        "seguimiento":      fmt(filter_posts("OPOSITOR")),
+        "medios_trad":      fmt(filter_posts("MEDIO_TRADICIONAL")),
+        "noticias_trad":    fmt(filter_news("MEDIO_TRADICIONAL")),
+        "medios_locales":   fmt(filter_posts("MEDIO_LOCAL")),
         "alertas":          [
             {
                 "actor":   a.get("actor"), "platform": a.get("platform"),
@@ -91,8 +104,8 @@ def build_data_summary(posts: list, news: list) -> str:
             "total_relevante":  len(rel_posts) + len(rel_news),
             "descartado":       (len(posts) + len(news)) - (len(rel_posts) + len(rel_news)),
             "pct_relevante":    round((len(rel_posts) + len(rel_news)) / max(len(posts) + len(news), 1) * 100),
-            "posts":            len(posts),
-            "noticias_rss":     len(news),
+            "posts":            len(rel_posts),
+            "noticias_rss":     len(rel_news),
             "alertas_total":    len(alerts),
             "por_plataforma":   dict(by_platform),
             "actor_mas_activo": Counter(p["actor"] for p in posts).most_common(1)[0] if posts else None,
