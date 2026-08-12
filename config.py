@@ -155,8 +155,11 @@ else:
 
 REPORT_RECIPIENTS = [
     "maxgonzales1981@gmail.com",
+    "fpereira@auraminerals.com",
 ]
-REPORT_BCC = []
+REPORT_BCC = [
+    "alefrico@gmail.com",
+]
 SENDER_NAME       = "🗺️ CENTINELA OCCIDENTE"
 
 MAX_TWEETS_PER_PROFILE = 15
