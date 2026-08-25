@@ -4,7 +4,7 @@ on:
   schedule:
     # Honduras = UTC-6. Recolección cada 2 horas.
     # La ENTREGA la dispara cron-job.org vía workflow_dispatch a las 02:00 UTC (8 PM HN)
-    - cron: '0 */2 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
